@@ -4,19 +4,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModel
-
-from lerobot.policies.act.modeling_act import (
-    ACT,
-    ACTION,
-    OBS_ENV_STATE,
-    OBS_IMAGES,
-    OBS_STATE,
-)
 from collections import deque
 from torch import Tensor
 
+from lerobot.policies.act.modeling_act import ACT, OBS_STATE
+
 from lerobot.policies.pretrained import PreTrainedPolicy
-from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_ENV_STATE
+from lerobot.utils.constants import (
+    ACTION,
+    OBS_ENV_STATE,
+    OBS_IMAGES,
+    OBS_LANGUAGE_ATTENTION_MASK,
+    OBS_LANGUAGE_TOKENS,
+)
 from lerobot.policies.act_text.configuration_act_text import ACTTextConfig
 
 
@@ -63,20 +63,32 @@ class ACTText(ACT):
         denom = mask.sum(dim=1).clamp(min=1.0)
         return summed / denom  # (B, H_text)
     
-    def _get_language_batch(self, batch: dict):
-        # Prefer flat keys (recommended)
+    def _get_language_batch(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Retrieve token ids and attention masks regardless of processor variant.
+        """
+        # Preferred: flattened observation keys (produced by TokenizerProcessorStep)
+        if OBS_LANGUAGE_TOKENS in batch and OBS_LANGUAGE_ATTENTION_MASK in batch:
+            return batch[OBS_LANGUAGE_TOKENS], batch[OBS_LANGUAGE_ATTENTION_MASK]
+
+        # Legacy flat keys
         if "language_tokens" in batch and "language_attention_mask" in batch:
             return batch["language_tokens"], batch["language_attention_mask"]
-        # Fallback to nested if someone kept the older processor
-        obs = batch.get("observation", {})
-        lang = obs.get("language", {})
-        if "tokens" in lang and "attention_mask" in lang:
-            return lang["tokens"], lang["attention_mask"]
-        # Helpful error with next steps
-        raise KeyError(f"{batch}"
-            "Language tokens not found in batch. "
-            "Ensure the act_text preprocessor is used and it injects "
-            "`language_tokens` and `language_attention_mask` at top-level."
+
+        # Legacy nested dict under observation.language
+        obs = batch.get("observation")
+        if isinstance(obs, dict):
+            lang = obs.get("language")
+            if isinstance(lang, dict):
+                tokens = lang.get("tokens")
+                mask = lang.get("attention_mask")
+                if tokens is not None and mask is not None:
+                    return tokens, mask
+
+        raise KeyError(
+            "Language tokens not found in batch. Ensure the act_text preprocessor adds "
+            f"`{OBS_LANGUAGE_TOKENS}` and `{OBS_LANGUAGE_ATTENTION_MASK}` "
+            "(or legacy `language_tokens` / `language_attention_mask`)."
         )
     
     def forward(self, batch: dict[str, torch.Tensor]):
@@ -161,7 +173,7 @@ class ACTText(ACT):
                 # rearrange to (seq, B, D) later; here we just extend lists with (B,D) items
                 for f, p in zip(cam_features.unbind(dim=1), cam_pos_embed.unbind(dim=1)):
                     encoder_in_tokens.append(f)
-                    encoder_in_pos_embed.append(p.unsqueeze(0))  # match (1,D) shape convention
+                    encoder_in_pos_embed.append(p)
 
         # Stack to (Seq, B, D) exactly like baseline
         encoder_in_tokens = torch.stack(encoder_in_tokens, dim=0)         # (S_enc, B, D)
