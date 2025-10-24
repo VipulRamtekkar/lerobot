@@ -624,6 +624,14 @@ class LeRobotDataset(torch.utils.data.Dataset):
             self.download(download_videos)
             self.hf_dataset = self.load_hf_dataset()
 
+        if self.episodes is not None:
+            self.hf_dataset.reset_format()
+            selected_episodes = set(self.episodes)
+            episode_indices = self.hf_dataset["episode_index"]
+            keep_indices = [idx for idx, ep in enumerate(episode_indices) if ep in selected_episodes]
+            self.hf_dataset = self.hf_dataset.select(keep_indices)
+            self.hf_dataset.set_transform(hf_transform_to_torch)
+
         # Setup delta_indices
         if self.delta_timestamps is not None:
             check_delta_timestamps(self.delta_timestamps, self.fps, self.tolerance_s)
