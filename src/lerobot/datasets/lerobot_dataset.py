@@ -597,6 +597,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self.revision = revision if revision else CODEBASE_VERSION
         self.video_backend = video_backend if video_backend else get_safe_default_codec()
         self.delta_indices = None
+        self._episode_range_override: dict[int, tuple[int, int]] | None = None
         self.batch_encoding_size = batch_encoding_size
         self.episodes_since_last_encoding = 0
 
@@ -629,8 +630,14 @@ class LeRobotDataset(torch.utils.data.Dataset):
             selected_episodes = set(self.episodes)
             episode_indices = self.hf_dataset["episode_index"]
             keep_indices = [idx for idx, ep in enumerate(episode_indices) if ep in selected_episodes]
+            if len(keep_indices) == 0:
+                raise ValueError(
+                    "Filtering by `dataset.episodes` produced an empty dataset. "
+                    "Please double-check the requested episode indices."
+                )
             self.hf_dataset = self.hf_dataset.select(keep_indices)
             self.hf_dataset.set_transform(hf_transform_to_torch)
+            self._episode_range_override = self._build_episode_range_override(selected_episodes)
 
         # Setup delta_indices
         if self.delta_timestamps is not None:
@@ -797,10 +804,33 @@ class LeRobotDataset(torch.utils.data.Dataset):
         else:
             return get_hf_features_from_features(self.features)
 
-    def _get_query_indices(self, idx: int, ep_idx: int) -> tuple[dict[str, list[int | bool]]]:
+    def _build_episode_range_override(self, selected_episodes: set[int]) -> dict[int, tuple[int, int]]:
+        """Compute contiguous dataset offsets for a filtered subset of episodes."""
+        overrides: dict[int, tuple[int, int]] = {}
+        cumulative = 0
+        episode_indices = self.meta.episodes["episode_index"]
+        start_indices = self.meta.episodes["dataset_from_index"]
+        end_indices = self.meta.episodes["dataset_to_index"]
+        for ep_idx, start, end in zip(episode_indices, start_indices, end_indices, strict=True):
+            ep_idx = int(ep_idx)
+            if ep_idx not in selected_episodes:
+                continue
+            start = int(start)
+            end = int(end)
+            length = end - start
+            overrides[ep_idx] = (cumulative, cumulative + length)
+            cumulative += length
+        return overrides
+
+    def _get_episode_bounds(self, ep_idx: int) -> tuple[int, int]:
+        """Return (start, end) indices for an episode, accounting for subset filtering."""
+        if self._episode_range_override and ep_idx in self._episode_range_override:
+            return self._episode_range_override[ep_idx]
         ep = self.meta.episodes[ep_idx]
-        ep_start = ep["dataset_from_index"]
-        ep_end = ep["dataset_to_index"]
+        return int(ep["dataset_from_index"]), int(ep["dataset_to_index"])
+
+    def _get_query_indices(self, idx: int, ep_idx: int) -> tuple[dict[str, list[int | bool]]]:
+        ep_start, ep_end = self._get_episode_bounds(ep_idx)
         query_indices = {
             key: [max(ep_start, min(ep_end - 1, idx + delta)) for delta in delta_idx]
             for key, delta_idx in self.delta_indices.items()
