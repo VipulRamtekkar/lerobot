@@ -319,6 +319,7 @@ def create_libero_envs(
     gym_kwargs: dict[str, Any] | None = None,
     camera_name: str | Sequence[str] = "agentview_image,robot0_eye_in_hand_image",
     init_states: bool = True,
+    task_ids: Sequence[int] | None = None,
     env_cls: Callable[[Sequence[Callable[[], Any]]], Any] | None = None,
 ) -> dict[str, dict[int, Any]]:
     """
@@ -337,7 +338,7 @@ def create_libero_envs(
         raise ValueError(f"n_envs must be a positive int; got {n_envs}.")
 
     gym_kwargs = dict(gym_kwargs or {})
-    task_ids_filter = gym_kwargs.pop("task_ids", None)  # optional: limit to specific tasks
+    task_ids_filter: Sequence[int] | None = task_ids or gym_kwargs.pop("task_ids", None)
 
     camera_names = _parse_camera_names(camera_name)
     suite_names = [s.strip() for s in str(task).split(",") if s.strip()]
